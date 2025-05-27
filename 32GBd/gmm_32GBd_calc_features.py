@@ -11,6 +11,7 @@ import polars as pl
 
 from scipy.io import loadmat
 from sklearn.mixture import GaussianMixture
+from sklearn.model_selection import train_test_split
 
 # ===========================
 # Globals and Configuration
@@ -137,6 +138,53 @@ def filter_overlap(df: pl.DataFrame, threshold: float = 35.2) -> pl.DataFrame:
     return df.filter(pl.col("Spacing") < threshold)
 
 
+def train_test_split_data(df: pl.DataFrame, test_size: float = 0.1, random_state: int = 42):
+    """
+    Split the data into training and test sets.
+    
+    Args:
+        df: Polars DataFrame with the data
+        test_size: Proportion of data for testing (default 0.1 for 10%)
+        random_state: Random seed for reproducibility
+    
+    Returns:
+        tuple: (train_df, test_df, X_train, X_test)
+    """
+    logger.info(f"Splitting data: {int((1-test_size)*100)}% train, {int(test_size*100)}% test")
+    
+    # Convert to numpy for sklearn train_test_split
+    X = df.select(["I", "Q"]).to_numpy()
+    metadata = df.select(["Distance", "Power", "Spacing", "OSNR"]).to_numpy()
+    
+    # Split the data
+    X_train, X_test, meta_train, meta_test = train_test_split(
+        X, metadata, test_size=test_size, random_state=random_state, shuffle=True
+    )
+    
+    # Convert back to Polars DataFrames
+    train_df = pl.DataFrame({
+        "I": X_train[:, 0],
+        "Q": X_train[:, 1],
+        "Distance": meta_train[:, 0],
+        "Power": meta_train[:, 1],
+        "Spacing": meta_train[:, 2],
+        "OSNR": meta_train[:, 3],
+    })
+    
+    test_df = pl.DataFrame({
+        "I": X_test[:, 0],
+        "Q": X_test[:, 1],
+        "Distance": meta_test[:, 0],
+        "Power": meta_test[:, 1],
+        "Spacing": meta_test[:, 2],
+        "OSNR": meta_test[:, 3],
+    })
+    
+    logger.info(f"Training samples: {len(X_train)}, Test samples: {len(X_test)}")
+    
+    return train_df, test_df, X_train, X_test
+
+
 def select_best_gmm(
     X: np.ndarray, max_components: int = 16
 ) -> tuple[GaussianMixture, list]:
@@ -163,6 +211,48 @@ def select_best_gmm(
     return best_gmm, bic_scores
 
 
+def calculate_likelihood_statistics(gmm: GaussianMixture, X_test: np.ndarray) -> dict:
+    """
+    Calculate likelihood statistics for the test set.
+    
+    Args:
+        gmm: Trained Gaussian Mixture Model
+        X_test: Test data
+    
+    Returns:
+        dict: Dictionary with likelihood statistics
+    """
+    logger.info("Calculating likelihood statistics on test set...")
+    
+    # Calculate log-likelihood for each sample
+    log_likelihoods = gmm.score_samples(X_test)
+    
+    # Calculate total log-likelihood
+    total_log_likelihood = gmm.score(X_test)
+    
+    # Calculate statistics
+    stats = {
+        "total_log_likelihood": total_log_likelihood,
+        "mean_log_likelihood": np.mean(log_likelihoods),
+        "std_log_likelihood": np.std(log_likelihoods),
+        "min_log_likelihood": np.min(log_likelihoods),
+        "max_log_likelihood": np.max(log_likelihoods),
+        "median_log_likelihood": np.median(log_likelihoods),
+        "n_test_samples": len(X_test),
+        "individual_log_likelihoods": log_likelihoods
+    }
+    
+    logger.info(f"Test set likelihood statistics:")
+    logger.info(f"  Total log-likelihood: {stats['total_log_likelihood']:.4f}")
+    logger.info(f"  Mean log-likelihood: {stats['mean_log_likelihood']:.4f}")
+    logger.info(f"  Std log-likelihood: {stats['std_log_likelihood']:.4f}")
+    logger.info(f"  Min log-likelihood: {stats['min_log_likelihood']:.4f}")
+    logger.info(f"  Max log-likelihood: {stats['max_log_likelihood']:.4f}")
+    logger.info(f"  Median log-likelihood: {stats['median_log_likelihood']:.4f}")
+    
+    return stats
+
+
 def plot_bic_curve(bic_scores: list, output_path: str):
     logger.info("Plotting BIC curve")
     plt.figure(figsize=(8, 4))
@@ -177,6 +267,34 @@ def plot_bic_curve(bic_scores: list, output_path: str):
     logger.debug(f"BIC plot saved to {output_path}")
 
 
+def plot_likelihood_distribution(log_likelihoods: np.ndarray, output_path: str):
+    """
+    Plot the distribution of log-likelihoods for the test set.
+    """
+    logger.info("Plotting likelihood distribution")
+    plt.figure(figsize=(10, 6))
+    
+    # Histogram
+    plt.subplot(1, 2, 1)
+    plt.hist(log_likelihoods, bins=50, alpha=0.7, color='skyblue', edgecolor='black')
+    plt.xlabel("Log-likelihood")
+    plt.ylabel("Frequency")
+    plt.title("Distribution of Log-likelihoods (Test Set)")
+    plt.grid(True, alpha=0.3)
+    
+    # Box plot
+    plt.subplot(1, 2, 2)
+    plt.boxplot(log_likelihoods, vert=True)
+    plt.ylabel("Log-likelihood")
+    plt.title("Box Plot of Log-likelihoods")
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+    logger.debug(f"Likelihood distribution plot saved to {output_path}")
+
+
 # ===========================
 # Main Execution
 # ===========================
@@ -189,32 +307,48 @@ def main():
     logger.info("Filtering scenarios with spectral overlapping...")
     overlap_df = filter_overlap(df_32gbd)
 
-    logger.info("Extracing I/Q features...")
-    X = overlap_df.select(["I", "Q"]).to_numpy()
+    logger.info("Splitting data into train/test sets...")
+    train_df, test_df, X_train, X_test = train_test_split_data(overlap_df)
 
-    logger.info("Training GMM models...")
-    best_gmm, bic_scores = select_best_gmm(X)
+    logger.info("Training GMM models on training set...")
+    best_gmm, bic_scores = select_best_gmm(X_train)
+
+    logger.info("Calculating likelihood on test set...")
+    likelihood_stats = calculate_likelihood_statistics(best_gmm, X_test)
 
     logger.info("Plotting and saving BIC curve...")
     plot_bic_curve(bic_scores, os.path.join(RESULTS_DIR, "gmm_bic_plot.png"))
 
-    logger.info("Saving best GMM and data...")
+    logger.info("Plotting likelihood distribution...")
+    plot_likelihood_distribution(
+        likelihood_stats["individual_log_likelihoods"], 
+        os.path.join(RESULTS_DIR, "likelihood_distribution.png")
+    )
+
+    logger.info("Saving best GMM, data, and results...")
     gmm_output = {
         "model": best_gmm,
-        "features": X,
-        "metadata": overlap_df.select(
-            ["Distance", "Power", "Spacing", "OSNR"]
-        ).to_pandas(),
+        "train_features": X_train,
+        "test_features": X_test,
+        "train_metadata": train_df.select(["Distance", "Power", "Spacing", "OSNR"]).to_pandas(),
+        "test_metadata": test_df.select(["Distance", "Power", "Spacing", "OSNR"]).to_pandas(),
         "best_n_components": best_gmm.n_components,
         "bic_scores": bic_scores,
+        "likelihood_stats": likelihood_stats,
     }
 
     with open(os.path.join(RESULTS_DIR, "gmm_overlap_model.pkl"), "wb") as f:
         pickle.dump(gmm_output, f)
 
-    logger.info(
-        f"GMM model trained with {best_gmm.n_components} components (least BIC)."
-    )
+    logger.info(f"GMM model trained with {best_gmm.n_components} components (least BIC).")
+    logger.info(f"Test set mean log-likelihood: {likelihood_stats['mean_log_likelihood']:.4f}")
+    
+    # Interpretation of results
+    if likelihood_stats['mean_log_likelihood'] > -10:  # Threshold can be adjusted
+        logger.info("✓ High likelihood detected - GMM adapted well to the scenario")
+    else:
+        logger.info("⚠ Low likelihood detected - Consider model adjustment")
+
 
 if __name__ == "__main__":
     main()
