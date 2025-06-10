@@ -19,18 +19,18 @@ logger = get_logger(__name__)
 
 def load_database_16gbd(n_samples: int, seed: int = 15) -> pl.DataFrame:
     """
-    Lee todos los CSV desde la base de datos, añade columnas 'Spacing' y 'OSNR',
-    y devuelve una muestra aleatoria de tamaño n_samples.
+    Reads all CSVs from the database, adds 'Spacing' and 'OSNR' columns,
+    and returns a random sample of size n_samples.
     """
     logger.info(f"Reading database with n_samples={n_samples}, seed={seed}")
     all_dataframes = []
 
     for directory in DB_PATH.iterdir():
-        # Ignorar el archivo TX
+        # Ignore the TX file
         if not directory.is_dir():
             continue
 
-        # Extraer el espaciamiento espectral del nombre del directorio
+        # Extract spectral spacing from the directory name
         try:
             spacing = extract_spacing_from_dirname(directory.name)
 
@@ -54,7 +54,7 @@ def load_database_16gbd(n_samples: int, seed: int = 15) -> pl.DataFrame:
                 continue
 
     if not all_dataframes:
-        logger.err("No data was loaded due to an error.")
+        logger.error("No data was loaded due to an error.")
         raise ValueError("No data was loaded due to an error.")
 
     full_df = pl.concat(all_dataframes)
@@ -68,7 +68,7 @@ def load_database_16gbd(n_samples: int, seed: int = 15) -> pl.DataFrame:
 
 def _get_backup_filename(base_filename: str, backup_number: int) -> str:
     """
-    Genera el nombre del archivo de backup, como "result.h5.bak1"
+    Generates the backup file name, such as "result.h5.bak1".
     """
     if not isinstance(backup_number, int) or backup_number < 1:
         raise ValueError("The backup number must be a positive integer.")
@@ -78,10 +78,10 @@ def _get_backup_filename(base_filename: str, backup_number: int) -> str:
 
 def _rotate_backups(file_path: Path) -> None:
     """
-    Realiza una rotación de backups: .bak(N) ← .bak(N-1) ← ... ← original
+    Performs backup rotation: .bak(N) ← .bak(N-1) ← ... ← original.
     """
     if not file_path.exists():
-        return  # No hay nada que respaldar
+        return  # Nothing to back up
 
     for i in reversed(range(1, MAX_BACKUPS)):
         src = file_path.parent / _get_backup_filename(file_path.name, i)
@@ -89,10 +89,10 @@ def _rotate_backups(file_path: Path) -> None:
         if src.exists():
             src.rename(dst)
 
-    # Backup actual ← original
+    # Current backup ← original
     first_backup = file_path.parent / _get_backup_filename(file_path.name, 1)
     file_path.rename(first_backup)
-    logger.info(f"Backup creado: {first_backup.name}")
+    logger.info(f"Backup created: {first_backup.name}")
 
 
 def save_result_to_hdf5(
@@ -104,11 +104,13 @@ def save_result_to_hdf5(
     std_log_likelihood_overlap: float,
     mean_log_likelihood: float,
     std_log_likelihood: float,
+    aic: float,  # New parameter
+    bic: float,  # New parameter
 ) -> None:
     """
-    Guarda una fila de resultados en un archivo HDF5 en formato plano/tabular.
+    Saves a row of results to an HDF5 file in a flat/tabular format.
 
-    Aplica log rotation si el archivo ya existe antes de escribir.
+    Applies log rotation if the file already exists before writing.
     """
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     file_path = RESULTS_DIR / filename
@@ -122,6 +124,8 @@ def save_result_to_hdf5(
                 std_log_likelihood_overlap,
                 mean_log_likelihood,
                 std_log_likelihood,
+                aic,
+                bic,
             )
         ],
         dtype=[
@@ -131,42 +135,45 @@ def save_result_to_hdf5(
             ("std_log_likelihood_overlap", "f4"),
             ("mean_log_likelihood", "f4"),
             ("std_log_likelihood", "f4"),
+            ("aic", "f4"),
+            ("bic", "f4"),
         ],
     )
 
     with h5py.File(file_path, "a") as f:
         # Check if the 'results' dataset exists *inside* the file
         if "results" in f:
-            # --- APPEND PATH ---
+            # --- APPEND DATA ---
             dset = f["results"]
             old_size = dset.shape[0]
             dset.resize((old_size + 1,))
             dset[old_size] = row[0]
             logger.info(f"Appended to existing file: {file_path.name}")
         else:
-            # --- CREATE PATH ---
+            # --- CREATE DATASET ---
             # The dataset doesn't exist, so create it for the first time.
             f.create_dataset(
                 "results",
                 data=row,
-                maxshape=(None,),  # Allows resizing along the first axis
-                chunks=True,  # Enables efficient resizing
+                maxshape=(None,),
+                chunks=True,
             )
             logger.info(f"New results file created: {file_path.name}")
 
 
 def read_results_from_hdf5(filename: str) -> pl.DataFrame:
     """
-    Lee el archivo de resultados HDF5 y devuelve un DataFrame de Polars.
+    Reads the HDF5 results file and returns a Polars DataFrame.
+    The DataFrame will now include 'aic' and 'bic' columns.
     """
     file_path = RESULTS_DIR / filename
 
     if not file_path.exists():
-        raise FileNotFoundError(f"No se encontró el archivo: {file_path}")
+        raise FileNotFoundError(f"File not found: {file_path}")
 
     with h5py.File(file_path, "r") as f:
         data = f["results"][:]
 
     df = pl.DataFrame(data)
-    logger.info(f"Leídas {df.shape[0]} filas desde {file_path.name}")
+    logger.info(f"Read {df.shape[0]} rows from {file_path.name}")
     return df
