@@ -124,81 +124,66 @@ def plot_likelihood_vs_samples(
         plt.show()
 
 
-# TODO: Change x-axis to number of samples
-def plot_aic_bic_vs_components(
+def plot_aic_bic_vs_samples(
     df: pl.DataFrame,
-    output_path: (str | Path) | None = None,
+    output_path: str | Path | None = None,
 ) -> None:
     """
-    Plots AIC and BIC vs. the number of components,
-    with separate lines for each number of samples, and faceted by overlap status.
-    A lower AIC/BIC generally indicates a better model.
+    Plots AIC and BIC vs. number of samples (n_samples),
+    with separate lines for each number of components, and faceted by overlap status.
 
     Args:
         df (pl.DataFrame): DataFrame containing the results including 'aic' and 'bic'.
         output_path (Optional[Union[str, Path]]): If provided, the plot will be saved to this path.
     """
-    # --- DEBUGGING START ---
-    logger.info(
-        f"DEBUG: Columns available in DataFrame for AIC/BIC plotting: {df.columns}"
-    )
-    logger.info(f"DEBUG: Schema of DataFrame for AIC/BIC plotting: {df.schema}")
-    # --- DEBUGGING END ---
+    logger.debug(f"Columns available in DataFrame for AIC/BIC plotting: {df.columns}")
+    logger.debug(f"Schema of DataFrame for AIC/BIC plotting: {df.schema}")
 
-    # --- Data Preparation for Seaborn (Long Format) ---
+    # --- Prepare DataFrame in long format for seaborn plotting ---
     df_plot_long = (
-        df.with_columns(
-            # Add 'n_samples' as string for categorical mapping (hue/style)
-            pl.col("n_samples").cast(pl.Utf8).alias("n_samples_str")
-        )
+        df.with_columns(pl.col("n_components").cast(pl.Utf8).alias("n_components_str"))
         .melt(
-            id_vars=["n_components", "n_samples", "n_samples_str"],
-            value_vars=["aic", "bic"],  # Using the saved 'aic' and 'bic' columns
+            id_vars=["n_samples", "n_components", "n_components_str"],
+            value_vars=["aic", "bic"],
             variable_name="Criterion Type",
             value_name="Criterion Value",
         )
-        .sort(["n_components", "n_samples", "Criterion Type"])
+        .sort(["n_samples", "n_components", "Criterion Type"])
     )
 
-    # Get unique n_components values for tick placement on X-axis
-    x_tick_values = sorted(df_plot_long["n_components"].unique().to_list())
+    x_tick_values = sorted(df_plot_long["n_samples"].unique().to_list())
 
-    # Use seaborn.relplot for faceting by "Criterion Type" (AIC vs BIC)
+    # --- Plot ---
     g = sns.relplot(
         data=df_plot_long,
-        x="n_components",
+        x="n_samples",
         y="Criterion Value",
-        hue="n_samples_str",  # Color by number of samples
-        style="n_samples_str",  # Line style by number of samples
-        markers=True,  # Add markers for each point
+        hue="n_components_str",
+        style="n_components_str",
+        markers=True,
         kind="line",
-        col="Criterion Type",  # Separate AIC and BIC into different columns
+        col="Criterion Type",
         col_wrap=2,
         height=6,
         aspect=1.3,
-        facet_kws={"sharey": False, "sharex": True},  # Don't share Y, but share X
-        palette="viridis",
+        facet_kws={"sharey": False, "sharex": True},
+        palette="mako",
     )
 
-    # Apply custom ticks to the x-axis for each subplot
     for ax in g.axes.flat:
-        ax.set_xscale("log", base=2)  # n_components often scale by powers of 2
+        ax.set_xscale("log", base=2)
         ax.set_xticks(x_tick_values)
-        ax.set_xticklabels(
-            [f"{int(x)}" for x in x_tick_values]
-        )  # Ensure integer labels
+        ax.set_xticklabels([f"{int(x)}" for x in x_tick_values])
 
-        ax.set_xlabel("Number of Components", fontsize=12)
-        ax.set_ylabel("Criterion Value (Lower is Better)", fontsize=12)
+        ax.set_xlabel("Number of Samples", fontsize=12)
+        ax.set_ylabel("Criterion Value", fontsize=12)
         ax.grid(True, which="both", linestyle="--", linewidth=0.5)
 
-    # Adjust titles for clarity
     g.set_titles("{col_name}")
-    g.fig.suptitle("AIC and BIC vs. Number of Components", y=1.02, fontsize=16)
+    g.fig.suptitle("AIC and BIC vs. Number of Samples", y=1.02, fontsize=16)
 
-    # Improve legend title and placement
     g.add_legend(
-        title="Number of Samples",
+        title="Number of Components",
         bbox_to_anchor=(1.02, 0.7),
         loc="upper left",
         borderaxespad=0.0,

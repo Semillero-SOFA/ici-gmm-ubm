@@ -1,5 +1,3 @@
-# gmm_ubm.py
-
 import numpy as np
 from sklearn.mixture import GaussianMixture
 import math
@@ -84,7 +82,7 @@ def train_gmm(
     return gmm
 
 
-def evaluate_log_likelihood(
+def evaluate_gmm(
     gmm: GaussianMixture, X: np.ndarray
 ) -> tuple[float, float, float, float]:
     """

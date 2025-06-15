@@ -17,23 +17,35 @@ from utils import (
 logger = get_logger(__name__)
 
 
-def load_database_16gbd(n_samples: int, seed: int = 15) -> pl.DataFrame:
+def load_database_16gbd(
+    n_samples: int, test_size: int, seed: int = 15
+) -> tuple[pl.DataFrame, pl.DataFrame]:
     """
-    Reads all CSVs from the database, adds 'Spacing' and 'OSNR' columns,
-    and returns a random sample of size n_samples.
+    Reads all CSVs from the database, filters by overlap (Spacing < threshold),
+    and returns separate training and testing datasets with consistent sampling per scenario.
+
+    Parameters:
+        - n_samples: Number of training samples per file
+        - test_size: Number of test samples per file
+        - seed: Random seed for sampling
+
+    Returns:
+        - train_df: Polars DataFrame with training data
+        - test_df: Polars DataFrame with testing data
     """
-    logger.info(f"Reading database with n_samples={n_samples}, seed={seed}")
-    all_dataframes = []
+    logger.info(
+        f"Reading database (overlap only) with {n_samples} train and {test_size} test samples per file, seed={seed}"
+    )
+
+    train_dfs = []
+    test_dfs = []
 
     for directory in DB_PATH.iterdir():
-        # Ignore the TX file
         if not directory.is_dir():
             continue
 
-        # Extract spectral spacing from the directory name
         try:
             spacing = extract_spacing_from_dirname(directory.name)
-
         except Exception as e:
             logger.warning(f"Could not extract spacing from {directory.name}: {e}")
             continue
@@ -42,25 +54,42 @@ def load_database_16gbd(n_samples: int, seed: int = 15) -> pl.DataFrame:
             try:
                 osnr = extract_osnr_from_filename(file.name)
                 df = pl.read_csv(file)
+
+                required_rows = n_samples + test_size
+                if df.height < required_rows:
+                    logger.warning(
+                        f"Skipping {file.name}, not enough rows ({df.height})"
+                    )
+                    continue
+
+                df = df.sample(n=required_rows, seed=seed, shuffle=True)
+
                 df = df.with_columns(
                     [
                         pl.lit(osnr).alias("OSNR"),
                         pl.lit(spacing).alias("Spacing"),
                     ]
                 )
-                all_dataframes.append(df.sample(n=n_samples, seed=seed, shuffle=True))
+
+                train_dfs.append(df.slice(0, n_samples))
+                test_dfs.append(df.slice(n_samples, test_size))
+
             except Exception as e:
                 logger.warning(f"Error while processing {file}: {e}")
                 continue
 
-    if not all_dataframes:
-        logger.error("No data was loaded due to an error.")
-        raise ValueError("No data was loaded due to an error.")
+    if not train_dfs or not test_dfs:
+        logger.error("No data was loaded.")
+        raise ValueError("Training or testing data could not be assembled.")
 
-    full_df = pl.concat(all_dataframes)
-    logger.info(f"Total samples available: {len(full_df)}")
+    train_df = pl.concat(train_dfs)
+    test_df = pl.concat(test_dfs)
 
-    return full_df
+    logger.info(
+        f"Loaded {train_df.shape[0]} training samples and {test_df.shape[0]} test samples."
+    )
+
+    return train_df, test_df
 
 
 # ========== Checkpoint Management ==========
@@ -104,8 +133,8 @@ def save_result_to_hdf5(
     std_log_likelihood_overlap: float,
     mean_log_likelihood: float,
     std_log_likelihood: float,
-    aic: float,  # New parameter
-    bic: float,  # New parameter
+    aic: float,
+    bic: float,
 ) -> None:
     """
     Saves a row of results to an HDF5 file in a flat/tabular format.
@@ -164,7 +193,6 @@ def save_result_to_hdf5(
 def read_results_from_hdf5(filename: str) -> pl.DataFrame:
     """
     Reads the HDF5 results file and returns a Polars DataFrame.
-    The DataFrame will now include 'aic' and 'bic' columns.
     """
     file_path = RESULTS_DIR / filename
 
